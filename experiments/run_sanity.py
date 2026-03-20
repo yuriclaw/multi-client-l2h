@@ -20,16 +20,16 @@ import timm
 from peft import LoraConfig, get_peft_model
 
 # ── Config ──────────────────────────────────────────────────────────
-NUM_CLIENTS = 3
+NUM_CLIENTS = 5
 NUM_CLASSES = 10
 BATCH_SIZE = 128
-ROUNDS = 15
-ADAPTER_EPOCHS = 5
+ROUNDS = 20
+ADAPTER_EPOCHS = 3
 REJECTOR_EPOCHS = 3
 LORA_RANK = 8
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DATA_DIR = os.path.expanduser("~/data")
-CORRUPTIONS = ["gaussian_noise", "shot_noise", "impulse_noise"]
+CORRUPTIONS = ["gaussian_noise", "shot_noise", "impulse_noise", "defocus_blur", "fog"]
 SEVERITY = 3
 
 random.seed(42); np.random.seed(42); torch.manual_seed(42)
@@ -83,7 +83,7 @@ class Rejector(nn.Module):
         super().__init__()
         self.net = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1))
     def forward(self, x):
-        return torch.sigmoid(self.net(x.view(x.size(0), -1))).squeeze(-1)
+        return torch.sigmoid(self.net(x.reshape(x.size(0), -1))).squeeze(-1)
 
 
 # ── Pre-train client ───────────────────────────────────────────────
@@ -261,7 +261,7 @@ def main():
     print("\n=== Phase 4: Alternating L2H training ===")
     
     c_e = 1.0   # misclassification cost
-    c_1 = 0.15  # deferral cost
+    c_1 = 0.3   # deferral cost (higher = less defer)
     
     for rnd in range(1, ROUNDS + 1):
         print(f"\n--- Round {rnd}/{ROUNDS} ---")
@@ -275,7 +275,7 @@ def main():
             # Stage 1: Train LoRA adapter
             server_base.train()
             adapter_params = [p for p in server_base.parameters() if p.requires_grad]
-            adapter_opt = Adam(adapter_params, lr=1e-4)
+            adapter_opt = Adam(adapter_params, lr=5e-5, weight_decay=1e-4)
             
             for ep in range(ADAPTER_EPOCHS):
                 for x, y in train_loader:
