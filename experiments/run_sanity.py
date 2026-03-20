@@ -196,6 +196,39 @@ def main():
     
     server_base = server_peft  # keep reference for adapter switching
     
+    # Linear probe: train ONLY the classification head on clean CIFAR-10
+    print("\nLinear probing server head on clean CIFAR-10...")
+    import torchvision, torchvision.transforms as T
+    probe_transform = T.Compose([T.ToTensor(), T.Normalize((0.4914,0.4822,0.4465),(0.2470,0.2435,0.2616))])
+    probe_ds = torchvision.datasets.CIFAR10(root=DATA_DIR, train=True, download=True, transform=probe_transform)
+    probe_loader = DataLoader(probe_ds, batch_size=256, shuffle=True, num_workers=2)
+    
+    # Unfreeze only the final FC layer for probing
+    # Access through PEFT wrapper
+    base_model = server_peft.get_base_model()
+    for name, p in base_model.named_parameters():
+        if 'fc' in name:  # ResNet18 final FC
+            p.requires_grad = True
+    
+    probe_opt = Adam([p for p in base_model.parameters() if p.requires_grad], lr=1e-3)
+    server_peft.train()
+    for ep in range(5):
+        correct, total = 0, 0
+        for x_b, y_b in probe_loader:
+            x_b, y_b = x_b.to(DEVICE), y_b.to(DEVICE)
+            logits = server_forward(x_b)
+            loss = F.cross_entropy(logits, y_b)
+            probe_opt.zero_grad(); loss.backward(); probe_opt.step()
+            correct += (logits.argmax(1) == y_b).sum().item()
+            total += y_b.size(0)
+        print(f"  Probe epoch {ep+1}/5: acc={correct/total:.4f}")
+    
+    # Re-freeze the head
+    for p in base_model.parameters():
+        p.requires_grad = False
+    server_peft.eval()
+    print("Linear probe done. Head frozen again.")
+    
     # Add per-client adapters
     for cid in clients:
         server_base.add_adapter(cid, lora_config)
