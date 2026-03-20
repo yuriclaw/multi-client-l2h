@@ -109,10 +109,18 @@ def pretrain_client(model, loader, epochs=10, lr=1e-3):
 
 
 # ── Build server with LoRA ─────────────────────────────────────────
+class ServerWrapper(nn.Module):
+    """Wraps a timm model with input upsampling for CIFAR (32→224)."""
+    def __init__(self, backbone, upsample_size=224):
+        super().__init__()
+        self.upsample = nn.Upsample(size=(upsample_size, upsample_size), mode='bilinear', align_corners=False)
+        self.backbone = backbone
+    def forward(self, x):
+        x = self.upsample(x)
+        return self.backbone(x)
+
 def build_server(num_classes=10, lora_rank=4):
-    """Create frozen ViT + per-client LoRA adapters.
-    Use vit_tiny_patch16_224 with 32x32 input (timm handles resize internally)."""
-    # Use a ResNet instead to avoid input size issues with ViT
+    """Create frozen ResNet18 + per-client LoRA adapters with input upsampling."""
     base = timm.create_model("resnet18", pretrained=True, num_classes=num_classes)
     for p in base.parameters():
         p.requires_grad = False
@@ -177,8 +185,16 @@ def main():
 
     # ── Phase 2: Build server + LoRA adapters ──
     print("\n=== Phase 2: Building server with LoRA ===")
-    server_base, lora_config = build_server(NUM_CLASSES, LORA_RANK)
-    server_base = server_base.to(DEVICE)
+    server_peft, lora_config = build_server(NUM_CLASSES, LORA_RANK)
+    # Wrap with upsampling for CIFAR 32x32 → 224x224
+    upsample = nn.Upsample(size=(224, 224), mode='bilinear', align_corners=False).to(DEVICE)
+    server_peft = server_peft.to(DEVICE)
+    
+    # Helper: forward with upsample
+    def server_forward(x):
+        return server_peft(upsample(x))
+    
+    server_base = server_peft  # keep reference for adapter switching
     
     # Add per-client adapters
     for cid in clients:
@@ -195,7 +211,7 @@ def main():
             for x, y in loader:
                 x, y = x.to(DEVICE), y.to(DEVICE)
                 # ResNet expects different input, but 32x32 should still work with timm
-                logits = server_base(x)
+                logits = server_forward(x)
                 correct += (logits.argmax(1) == y).sum().item()
                 total += y.size(0)
         print(f"  [{cid}] server baseline acc: {correct/total:.4f}")
@@ -231,7 +247,7 @@ def main():
                     x, y = x.to(DEVICE), y.to(DEVICE)
                     with torch.no_grad():
                         defer_p = rejector(x)
-                    logits = server_base(x)
+                    logits = server_forward(x)
                     ce = F.cross_entropy(logits, y, reduction="none")
                     loss = (defer_p * ce).mean()
                     adapter_opt.zero_grad(); loss.backward(); adapter_opt.step()
@@ -245,7 +261,7 @@ def main():
                 for x, y in train_loader:
                     x, y = x.to(DEVICE), y.to(DEVICE)
                     with torch.no_grad():
-                        server_logits = server_base(x)
+                        server_logits = server_forward(x)
                         client_logits = client_model(x)
                     defer_p = rejector(x)
                     client_correct = (client_logits.argmax(1) == y).float()
@@ -280,7 +296,7 @@ def main():
                         defer_mask = defer_p > 0.5
                         
                         c_preds = client_model(x).argmax(1)
-                        s_preds = server_base(x).argmax(1)
+                        s_preds = server_forward(x).argmax(1)
                         
                         # System: use client where not deferred, server where deferred
                         sys_preds = torch.where(defer_mask, s_preds, c_preds)
@@ -317,7 +333,7 @@ def main():
             
             with torch.no_grad():
                 c_preds = client_model(x_test).argmax(1)
-                s_preds = server_base(x_test).argmax(1)
+                s_preds = server_forward(x_test).argmax(1)
                 defer_p = rejector(x_test)
                 defer_mask = defer_p > 0.5
                 sys_preds = torch.where(defer_mask, s_preds, c_preds)
