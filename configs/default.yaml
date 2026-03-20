@@ -1,0 +1,58 @@
+# Multi-Client L2H with LoRA Personalization — Default Config
+
+dataset:
+  name: cifar10c                # cifar10c or cifar100c
+  data_dir: ./data
+  num_classes: 10
+  image_size: 32
+  corruptions:                  # one per client
+    - gaussian_noise
+    - shot_noise
+    - impulse_noise
+    - defocus_blur
+    - glass_blur
+  severity: 3                   # corruption severity 1-5
+
+clients:
+  num_clients: 5
+  model: lenet                  # lenet | smallcnn | mobilenet
+  freeze: true                  # freeze client after pretraining
+
+server:
+  backbone: vit_tiny_patch16_224   # timm model name
+  freeze_backbone: true
+  lora:
+    rank: 8
+    alpha: 16
+    dropout: 0.05
+    target_modules:             # modules to inject LoRA into
+      - qkv
+      - proj
+
+rejector:
+  hidden_dim: 128
+  input_dim: 3072               # flattened 3×32×32 or feature dim
+
+costs:
+  c_e: 1.0                     # cost of error
+  c_1: 0.1                     # cost of deferral
+
+training:
+  num_rounds: 50
+  adapter_epochs: 5             # epochs per round for LoRA adapter
+  rejector_epochs: 3            # epochs per round for rejector
+  adapter_lr: 1.0e-4
+  rejector_lr: 1.0e-3
+  batch_size: 128
+  weight_decay: 1.0e-4
+
+evaluation:
+  eval_every: 5                 # evaluate every N rounds
+
+logging:
+  wandb_project: l2h-lora
+  wandb_entity: null
+  log_every: 10
+
+seed: 42
+device: cuda
