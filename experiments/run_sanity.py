@@ -23,10 +23,10 @@ from peft import LoraConfig, get_peft_model
 NUM_CLIENTS = 3
 NUM_CLASSES = 10
 BATCH_SIZE = 128
-ROUNDS = 10
-ADAPTER_EPOCHS = 3
-REJECTOR_EPOCHS = 2
-LORA_RANK = 4
+ROUNDS = 15
+ADAPTER_EPOCHS = 5
+REJECTOR_EPOCHS = 3
+LORA_RANK = 8
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DATA_DIR = os.path.expanduser("~/data")
 CORRUPTIONS = ["gaussian_noise", "shot_noise", "impulse_noise"]
@@ -72,7 +72,7 @@ class LeNet(nn.Module):
     def forward(self, x):
         x = F.max_pool2d(F.relu(self.conv1(x)), 2)
         x = F.max_pool2d(F.relu(self.conv2(x)), 2)
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         return self.fc3(x)
@@ -129,7 +129,7 @@ def build_server(num_classes=10, lora_rank=4):
         r=lora_rank,
         lora_alpha=lora_rank * 2,
         lora_dropout=0.05,
-        target_modules=["conv1", "conv2"],  # ResNet conv layers
+        target_modules=["layer3", "layer4", "fc"],  # deeper layers + head
         bias="none",
     )
     model = get_peft_model(base, lora_config, adapter_name="default")
@@ -278,11 +278,8 @@ def main():
             for ep in range(ADAPTER_EPOCHS):
                 for x, y in train_loader:
                     x, y = x.to(DEVICE), y.to(DEVICE)
-                    with torch.no_grad():
-                        defer_p = rejector(x)
                     logits = server_forward(x)
-                    ce = F.cross_entropy(logits, y, reduction="none")
-                    loss = (defer_p * ce).mean()
+                    loss = F.cross_entropy(logits, y)
                     adapter_opt.zero_grad(); loss.backward(); adapter_opt.step()
             
             # Stage 2: Train rejector
