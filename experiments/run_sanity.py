@@ -129,7 +129,9 @@ def build_server(num_classes=10, lora_rank=4):
         r=lora_rank,
         lora_alpha=lora_rank * 2,
         lora_dropout=0.05,
-        target_modules=["layer3", "layer4", "fc"],  # deeper layers + head
+        target_modules=["layer3.0.conv1", "layer3.0.conv2", "layer3.1.conv1", "layer3.1.conv2",
+                        "layer4.0.conv1", "layer4.0.conv2", "layer4.1.conv1", "layer4.1.conv2",
+                        "fc"],  # deeper conv layers + head
         bias="none",
     )
     model = get_peft_model(base, lora_config, adapter_name="default")
