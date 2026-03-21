@@ -206,19 +206,26 @@ def main():
     clean_ds = torchvision.datasets.CIFAR10(root=DATA_DIR, train=True, download=True, transform=probe_transform)
     
     # Also add corrupted data from ALL corruption types for a robust head
-    corrupt_datasets = []
+    # Convert clean CIFAR-10 to tensors first
+    print("  Loading clean CIFAR-10 as tensors...")
+    clean_loader_tmp = DataLoader(clean_ds, batch_size=1000, num_workers=2)
+    clean_imgs, clean_labels = [], []
+    for xb, yb in clean_loader_tmp:
+        clean_imgs.append(xb); clean_labels.append(yb)
+    clean_tensor_ds = TensorDataset(torch.cat(clean_imgs), torch.cat(clean_labels))
+    
+    corrupt_datasets = [clean_tensor_ds]
     all_probe_corruptions = ["gaussian_noise", "shot_noise", "impulse_noise", "defocus_blur", "fog",
                               "motion_blur", "brightness", "contrast", "frost", "snow"]
     for corr in all_probe_corruptions:
         try:
             imgs, labels = load_cifar10c(DATA_DIR, corr, 3)
-            # Use first 5000 from each
             corrupt_datasets.append(TensorDataset(imgs[:5000], labels[:5000]))
-        except:
-            pass
+        except Exception as e:
+            print(f"  Skipping {corr}: {e}")
     
-    probe_ds = ConcatDataset([clean_ds] + corrupt_datasets)
-    print(f"  Probe dataset size: {len(probe_ds)} (clean + {len(corrupt_datasets)} corruption types)")
+    probe_ds = ConcatDataset(corrupt_datasets)
+    print(f"  Probe dataset size: {len(probe_ds)} (clean + {len(corrupt_datasets)-1} corruption types)")
     probe_loader = DataLoader(probe_ds, batch_size=256, shuffle=True, num_workers=2)
     
     # Unfreeze only the final FC layer for probing
