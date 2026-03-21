@@ -121,7 +121,7 @@ class ServerWrapper(nn.Module):
 
 def build_server(num_classes=10, lora_rank=4):
     """Create frozen ResNet18 + per-client LoRA adapters with input upsampling."""
-    base = timm.create_model("resnet18", pretrained=True, num_classes=num_classes)
+    base = timm.create_model("resnet50", pretrained=True, num_classes=num_classes)
     for p in base.parameters():
         p.requires_grad = False
     
@@ -129,8 +129,11 @@ def build_server(num_classes=10, lora_rank=4):
         r=lora_rank,
         lora_alpha=lora_rank * 2,
         lora_dropout=0.05,
-        target_modules=["layer3.0.conv1", "layer3.0.conv2", "layer3.1.conv1", "layer3.1.conv2",
-                        "layer4.0.conv1", "layer4.0.conv2", "layer4.1.conv1", "layer4.1.conv2"],
+        # ResNet-50 Bottleneck: conv1(1x1), conv2(3x3), conv3(1x1) per block
+        # Target the 3x3 convs in layer3 and layer4 (most expressive)
+        target_modules=["layer3.0.conv2", "layer3.1.conv2", "layer3.2.conv2",
+                        "layer3.3.conv2", "layer3.4.conv2", "layer3.5.conv2",
+                        "layer4.0.conv2", "layer4.1.conv2", "layer4.2.conv2"],
                         # Only conv layers — do NOT touch fc (probed head must stay intact)
         bias="none",
     )
