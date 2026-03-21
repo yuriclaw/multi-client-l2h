@@ -24,9 +24,9 @@ NUM_CLIENTS = 5
 NUM_CLASSES = 10
 BATCH_SIZE = 128
 ROUNDS = 20
-ADAPTER_EPOCHS = 3
+ADAPTER_EPOCHS = 5
 REJECTOR_EPOCHS = 3
-LORA_RANK = 8
+LORA_RANK = 16
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DATA_DIR = os.path.expanduser("~/data")
 CORRUPTIONS = ["gaussian_noise", "shot_noise", "impulse_noise", "defocus_blur", "fog"]
@@ -130,8 +130,8 @@ def build_server(num_classes=10, lora_rank=4):
         lora_alpha=lora_rank * 2,
         lora_dropout=0.05,
         target_modules=["layer3.0.conv1", "layer3.0.conv2", "layer3.1.conv1", "layer3.1.conv2",
-                        "layer4.0.conv1", "layer4.0.conv2", "layer4.1.conv1", "layer4.1.conv2",
-                        "fc"],  # deeper conv layers + head
+                        "layer4.0.conv1", "layer4.0.conv2", "layer4.1.conv1", "layer4.1.conv2"],
+                        # Only conv layers — do NOT touch fc (probed head must stay intact)
         bias="none",
     )
     model = get_peft_model(base, lora_config, adapter_name="default")
@@ -198,34 +198,12 @@ def main():
     
     server_base = server_peft  # keep reference for adapter switching
     
-    # Linear probe: train the classification head on clean + corrupted CIFAR-10
-    print("\nLinear probing server head on clean + corrupted CIFAR-10...")
+    # Linear probe: train ONLY on clean CIFAR-10 (server never sees corruptions!)
+    print("\nLinear probing server head on CLEAN CIFAR-10 only...")
     import torchvision, torchvision.transforms as T
-    from torch.utils.data import ConcatDataset
     probe_transform = T.Compose([T.ToTensor(), T.Normalize((0.4914,0.4822,0.4465),(0.2470,0.2435,0.2616))])
-    clean_ds = torchvision.datasets.CIFAR10(root=DATA_DIR, train=True, download=True, transform=probe_transform)
-    
-    # Also add corrupted data from ALL corruption types for a robust head
-    # Convert clean CIFAR-10 to tensors first
-    print("  Loading clean CIFAR-10 as tensors...")
-    clean_loader_tmp = DataLoader(clean_ds, batch_size=1000, num_workers=2)
-    clean_imgs, clean_labels = [], []
-    for xb, yb in clean_loader_tmp:
-        clean_imgs.append(xb); clean_labels.append(yb)
-    clean_tensor_ds = TensorDataset(torch.cat(clean_imgs), torch.cat(clean_labels))
-    
-    corrupt_datasets = [clean_tensor_ds]
-    all_probe_corruptions = ["gaussian_noise", "shot_noise", "impulse_noise", "defocus_blur", "fog",
-                              "motion_blur", "brightness", "contrast", "frost", "snow"]
-    for corr in all_probe_corruptions:
-        try:
-            imgs, labels = load_cifar10c(DATA_DIR, corr, 3)
-            corrupt_datasets.append(TensorDataset(imgs[:5000], labels[:5000]))
-        except Exception as e:
-            print(f"  Skipping {corr}: {e}")
-    
-    probe_ds = ConcatDataset(corrupt_datasets)
-    print(f"  Probe dataset size: {len(probe_ds)} (clean + {len(corrupt_datasets)-1} corruption types)")
+    probe_ds = torchvision.datasets.CIFAR10(root=DATA_DIR, train=True, download=True, transform=probe_transform)
+    print(f"  Probe dataset size: {len(probe_ds)} (clean only — server has NEVER seen corruptions)")
     probe_loader = DataLoader(probe_ds, batch_size=256, shuffle=True, num_workers=2)
     
     # Unfreeze only the final FC layer for probing
@@ -237,7 +215,7 @@ def main():
     
     probe_opt = Adam([p for p in base_model.parameters() if p.requires_grad], lr=1e-3)
     server_peft.train()
-    for ep in range(10):
+    for ep in range(8):
         correct, total = 0, 0
         for x_b, y_b in probe_loader:
             x_b, y_b = x_b.to(DEVICE), y_b.to(DEVICE)
@@ -247,7 +225,7 @@ def main():
             correct += (logits.argmax(1) == y_b).sum().item()
             total += y_b.size(0)
         if (ep+1) % 2 == 0:
-            print(f"  Probe epoch {ep+1}/10: acc={correct/total:.4f}")
+            print(f"  Probe epoch {ep+1}/8: acc={correct/total:.4f}")
     
     # Re-freeze the head
     for p in base_model.parameters():
