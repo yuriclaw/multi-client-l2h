@@ -198,11 +198,27 @@ def main():
     
     server_base = server_peft  # keep reference for adapter switching
     
-    # Linear probe: train ONLY the classification head on clean CIFAR-10
-    print("\nLinear probing server head on clean CIFAR-10...")
+    # Linear probe: train the classification head on clean + corrupted CIFAR-10
+    print("\nLinear probing server head on clean + corrupted CIFAR-10...")
     import torchvision, torchvision.transforms as T
+    from torch.utils.data import ConcatDataset
     probe_transform = T.Compose([T.ToTensor(), T.Normalize((0.4914,0.4822,0.4465),(0.2470,0.2435,0.2616))])
-    probe_ds = torchvision.datasets.CIFAR10(root=DATA_DIR, train=True, download=True, transform=probe_transform)
+    clean_ds = torchvision.datasets.CIFAR10(root=DATA_DIR, train=True, download=True, transform=probe_transform)
+    
+    # Also add corrupted data from ALL corruption types for a robust head
+    corrupt_datasets = []
+    all_probe_corruptions = ["gaussian_noise", "shot_noise", "impulse_noise", "defocus_blur", "fog",
+                              "motion_blur", "brightness", "contrast", "frost", "snow"]
+    for corr in all_probe_corruptions:
+        try:
+            imgs, labels = load_cifar10c(DATA_DIR, corr, 3)
+            # Use first 5000 from each
+            corrupt_datasets.append(TensorDataset(imgs[:5000], labels[:5000]))
+        except:
+            pass
+    
+    probe_ds = ConcatDataset([clean_ds] + corrupt_datasets)
+    print(f"  Probe dataset size: {len(probe_ds)} (clean + {len(corrupt_datasets)} corruption types)")
     probe_loader = DataLoader(probe_ds, batch_size=256, shuffle=True, num_workers=2)
     
     # Unfreeze only the final FC layer for probing
@@ -214,7 +230,7 @@ def main():
     
     probe_opt = Adam([p for p in base_model.parameters() if p.requires_grad], lr=1e-3)
     server_peft.train()
-    for ep in range(5):
+    for ep in range(10):
         correct, total = 0, 0
         for x_b, y_b in probe_loader:
             x_b, y_b = x_b.to(DEVICE), y_b.to(DEVICE)
@@ -223,7 +239,8 @@ def main():
             probe_opt.zero_grad(); loss.backward(); probe_opt.step()
             correct += (logits.argmax(1) == y_b).sum().item()
             total += y_b.size(0)
-        print(f"  Probe epoch {ep+1}/5: acc={correct/total:.4f}")
+        if (ep+1) % 2 == 0:
+            print(f"  Probe epoch {ep+1}/10: acc={correct/total:.4f}")
     
     # Re-freeze the head
     for p in base_model.parameters():
