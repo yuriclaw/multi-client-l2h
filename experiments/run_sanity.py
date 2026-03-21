@@ -364,21 +364,32 @@ def main():
         print(f"\n  [{cid}] (trained on {own_corr}):")
         for corr in all_corruptions:
             imgs, labels = load_cifar10c(DATA_DIR, corr, SEVERITY)
-            # Use last 2000 as test
-            x_test = imgs[-2000:].to(DEVICE)
-            y_test = labels[-2000:].to(DEVICE)
+            x_test = imgs[-2000:]
+            y_test = labels[-2000:]
             
-            with torch.no_grad():
-                c_preds = client_model(x_test).argmax(1)
-                s_preds = server_forward(x_test).argmax(1)
-                defer_p = rejector(x_test)
-                defer_mask = defer_p > 0.5
-                sys_preds = torch.where(defer_mask, s_preds, c_preds)
+            # Batch to avoid OOM with large server models
+            c_correct = s_correct = sys_correct = n_defer = 0
+            total = 0
+            eval_bs = 128
+            for i in range(0, len(x_test), eval_bs):
+                xb = x_test[i:i+eval_bs].to(DEVICE)
+                yb = y_test[i:i+eval_bs].to(DEVICE)
+                with torch.no_grad():
+                    c_p = client_model(xb).argmax(1)
+                    s_p = server_forward(xb).argmax(1)
+                    d_p = rejector(xb)
+                    d_mask = d_p > 0.5
+                    sys_p = torch.where(d_mask, s_p, c_p)
+                c_correct += (c_p == yb).sum().item()
+                s_correct += (s_p == yb).sum().item()
+                sys_correct += (sys_p == yb).sum().item()
+                n_defer += d_mask.sum().item()
+                total += yb.size(0)
             
-            c_acc = (c_preds == y_test).float().mean().item()
-            s_acc = (s_preds == y_test).float().mean().item()
-            sys_acc = (sys_preds == y_test).float().mean().item()
-            d_rate = defer_mask.float().mean().item()
+            c_acc = c_correct / total
+            s_acc = s_correct / total
+            sys_acc = sys_correct / total
+            d_rate = n_defer / total
             marker = " ← own" if corr == own_corr else ""
             print(f"    {corr:20s}: client={c_acc:.4f} server_lora={s_acc:.4f} system={sys_acc:.4f} defer={d_rate:.4f}{marker}")
 
